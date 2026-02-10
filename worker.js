@@ -278,7 +278,7 @@ export default {
     // Ursprüngliche Seite von Pages holen
     // WICHTIG: Hier deine Cloudflare Pages Domain eintragen!
     const pagesUrl = new URL(request.url);
-    pagesUrl.hostname = 'DEIN-PROJEKT.pages.dev'; // ← ANPASSEN!
+    pagesUrl.hostname = 'manipulation-demo.pages.dev'; // ← ANPASSEN!
     const originResponse = await fetch(pagesUrl.toString());
 
     // Check ob HTML
