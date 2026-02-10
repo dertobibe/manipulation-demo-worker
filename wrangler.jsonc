@@ -1,0 +1,5 @@
+{
+  "name": "manipulation-demo-worker",
+  "compatibility_date": "2026-02-10",
+  "main": "worker.js"
+}
