@@ -136,7 +136,6 @@ function getPersonalizedContent(classification) {
   return COMPANY_CONTENT['_default_private'];
 }
 
-// --- HTMLRewriter Handler: setzt Inhalt per Element-ID ---
 class InjectByID {
   constructor(contentMap) {
     this.contentMap = contentMap;
@@ -172,6 +171,14 @@ export default {
   async fetch(request, env, ctx) {
     const startTime = Date.now();
     const visitorIP = request.headers.get('cf-connecting-ip') || '0.0.0.0';
+
+    // Bypass: ?utm_bypass=true → unmanipulierte Seite ausliefern
+    const requestUrl = new URL(request.url);
+    if (requestUrl.searchParams.get('utm_bypass') === 'true') {
+      const pagesUrl = new URL(request.url);
+      pagesUrl.hostname = 'manipulation-demo.pages.dev';
+      return fetch(pagesUrl.toString());
+    }
 
     const ipData = await lookupIP(visitorIP);
     const classification = classifyVisitor(ipData);
