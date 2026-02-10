@@ -1,5 +1,14 @@
 {
   "name": "manipulation-demo-worker",
   "compatibility_date": "2026-02-10",
-  "main": "worker.js"
+  "main": "worker.js",
+  "ai": {
+    "binding": "AI"
+  },
+  "r2_buckets": [
+    {
+      "binding": "IMAGE_CACHE",
+      "bucket_name": "city-images"
+    }
+  ]
 }
