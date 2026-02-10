@@ -276,12 +276,10 @@ export default {
     const content = getPersonalizedContent(classification);
 
     // Ursprüngliche Seite von Pages holen
-    // WICHTIG: URL anpassen auf deine Cloudflare Pages Domain!
+    // WICHTIG: Hier deine Cloudflare Pages Domain eintragen!
     const pagesUrl = new URL(request.url);
-    // Option A: Wenn Worker als Route VOR Pages → einfach fetch(request) weiterleiten
-    // Option B: Wenn Worker standalone → Origin-URL setzen:
-    // pagesUrl.hostname = 'dein-projekt.pages.dev';
-    const originResponse = await fetch(request);
+    pagesUrl.hostname = 'DEIN-PROJEKT.pages.dev'; // ← ANPASSEN!
+    const originResponse = await fetch(pagesUrl.toString());
 
     // Check ob HTML
     const contentType = originResponse.headers.get('content-type') || '';
