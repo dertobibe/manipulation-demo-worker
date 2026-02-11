@@ -501,6 +501,216 @@ async function handleBESVImage(request, env) {
   return new Response(object.body, { headers });
 }
 
+// --- STIHL Demo: Variant Content ---
+
+const STIHL_URL = 'https://www.stihl.de/de/p/kettensaegen-motorsaegen-benzin-kettensaege-ms-291-1802';
+
+const STIHL_VARIANTS = {
+  foerster: {
+    title: 'MS 291 - Des Försters rechte Hand',
+    imageKey: 'stihl-variant-foerster',
+    fluxPrompt: 'Professional product photo of an orange chainsaw on a freshly cut oak log in a German mixed forest, morning light filtering through pine trees, forestry work setting, professional equipment photography, clean composition, 8k quality',
+  },
+  profi: {
+    title: 'MS 291 - Profi-Gerät für Profi-Anspruch',
+    imageKey: 'stihl-variant-profi',
+    fluxPrompt: 'Professional product photo of an orange chainsaw in a professional timber workshop, stacked lumber and wood planks, construction site setting, heavy duty professional use, commercial equipment photography, clean composition, 8k quality',
+  },
+};
+
+// --- STIHL: HTMLRewriter Handlers ---
+
+class STIHLBaseTagHandler {
+  element(element) {
+    element.prepend('<base href="https://www.stihl.de/">', { html: true });
+  }
+}
+
+class STIHLTitleHandler {
+  constructor(newTitle) { this.newTitle = newTitle; }
+  element(element) {
+    element.setInnerContent(this.newTitle, { html: false });
+  }
+}
+
+// Inject script before </body> to handle React hydration overrides
+class STIHLPostHydrationScript {
+  constructor(title, imageUrl) {
+    this.title = title;
+    this.imageUrl = imageUrl;
+  }
+  element(element) {
+    const script = `
+<script>
+(function() {
+  var VARIANT_TITLE = ${JSON.stringify(this.title)};
+  var VARIANT_IMAGE = ${JSON.stringify(this.imageUrl)};
+
+  function applyTitle() {
+    var h1 = document.querySelector('.m_product-detail-headline__title');
+    if (h1 && h1.textContent !== VARIANT_TITLE) {
+      h1.textContent = VARIANT_TITLE;
+    }
+  }
+
+  function applyImage() {
+    if (!VARIANT_IMAGE) return;
+    // Replace first gallery slide image (main product image)
+    var firstSlide = document.querySelector('.image-gallery-slide.center');
+    if (firstSlide) {
+      var sources = firstSlide.querySelectorAll('source');
+      sources.forEach(function(s) { s.setAttribute('srcSet', VARIANT_IMAGE); });
+      var img = firstSlide.querySelector('img');
+      if (img) { img.src = VARIANT_IMAGE; img.removeAttribute('loading'); }
+    }
+    // Also replace first thumbnail
+    var firstThumb = document.querySelector('.image-gallery-thumbnail.active picture');
+    if (firstThumb) {
+      var tsources = firstThumb.querySelectorAll('source');
+      tsources.forEach(function(s) { s.setAttribute('srcSet', VARIANT_IMAGE); });
+      var timg = firstThumb.querySelector('img');
+      if (timg) { timg.src = VARIANT_IMAGE; }
+    }
+  }
+
+  function applyAll() { applyTitle(); applyImage(); }
+
+  // Apply immediately
+  applyAll();
+
+  // Re-apply after DOM content loaded (React hydration)
+  document.addEventListener('DOMContentLoaded', function() {
+    applyAll();
+    // Re-apply periodically for a few seconds to catch late hydration
+    var attempts = 0;
+    var interval = setInterval(function() {
+      applyAll();
+      if (++attempts >= 10) clearInterval(interval);
+    }, 500);
+  });
+
+  // MutationObserver as final safety net
+  var observer = new MutationObserver(function() { applyAll(); });
+  var target = document.querySelector('.m_product-detail-headline__title');
+  if (target) observer.observe(target, { childList: true, characterData: true, subtree: true });
+  var gallery = document.querySelector('.image-gallery-slides');
+  if (gallery) observer.observe(gallery, { childList: true, subtree: true, attributes: true });
+})();
+</script>`;
+    element.append(script, { html: true });
+  }
+}
+
+// --- STIHL Proxy Handler ---
+
+async function handleStihlProxy(request, env, ctx) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant') || 'original';
+  const variantConfig = STIHL_VARIANTS[variant];
+
+  const stihlResponse = await fetch(STIHL_URL, {
+    headers: {
+      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+    },
+  });
+
+  const newHeaders = new Headers(stihlResponse.headers);
+  newHeaders.delete('x-frame-options');
+  newHeaders.delete('content-security-policy');
+  newHeaders.delete('content-security-policy-report-only');
+
+  let rewriter = new HTMLRewriter()
+    .on('head', new STIHLBaseTagHandler());
+
+  if (variantConfig) {
+    const imageUrl = `${url.origin}/proxy/stihl-image?variant=${variant}`;
+    rewriter = rewriter
+      .on('.m_product-detail-headline__title', new STIHLTitleHandler(variantConfig.title))
+      .on('body', new STIHLPostHydrationScript(variantConfig.title, imageUrl));
+  }
+
+  const modifiedResponse = new Response(stihlResponse.body, {
+    status: stihlResponse.status,
+    headers: newHeaders,
+  });
+
+  return rewriter.transform(modifiedResponse);
+}
+
+// --- Serve STIHL variant image from R2 (with FLUX generation fallback) ---
+
+async function handleStihlImage(request, env, ctx) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant');
+  const variantConfig = STIHL_VARIANTS[variant];
+
+  if (!variantConfig) {
+    return new Response('Unknown variant', { status: 404 });
+  }
+
+  // Try R2 cache first
+  const cached = await env.IMAGE_CACHE.get(variantConfig.imageKey);
+  if (cached) {
+    const headers = new Headers();
+    headers.set('Content-Type', cached.httpMetadata?.contentType || 'image/jpeg');
+    headers.set('Cache-Control', 'public, max-age=86400');
+    return new Response(cached.body, { headers });
+  }
+
+  // Generate with FLUX
+  try {
+    const aiResponse = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', {
+      prompt: variantConfig.fluxPrompt,
+      num_steps: 4,
+    });
+
+    let imageBuffer;
+    if (aiResponse instanceof ReadableStream) {
+      const reader = aiResponse.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      imageBuffer = combined.buffer;
+    } else if (aiResponse instanceof ArrayBuffer) {
+      imageBuffer = aiResponse;
+    } else if (aiResponse.image) {
+      const binaryStr = atob(aiResponse.image);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      imageBuffer = bytes.buffer;
+    } else {
+      return new Response('Unexpected AI response', { status: 500 });
+    }
+
+    // Cache in R2 async
+    ctx.waitUntil(
+      env.IMAGE_CACHE.put(variantConfig.imageKey, imageBuffer, {
+        httpMetadata: { contentType: 'image/png' },
+        customMetadata: { prompt: variantConfig.fluxPrompt, generated: new Date().toISOString() },
+      })
+    );
+
+    const headers = new Headers();
+    headers.set('Content-Type', 'image/png');
+    headers.set('Cache-Control', 'public, max-age=86400');
+    return new Response(imageBuffer, { headers });
+  } catch (e) {
+    return new Response(`Image generation failed: ${e.message}`, { status: 500 });
+  }
+}
+
 // --- HTMLRewriter Handlers (IP Detection Demo) ---
 
 class InjectByID {
@@ -629,6 +839,24 @@ export default {
     const pathname = requestUrl.pathname;
 
     // --- Routing ---
+
+    // STIHL variant image from R2 (with FLUX fallback)
+    if (pathname === '/proxy/stihl-image') {
+      return handleStihlImage(request, env, ctx);
+    }
+
+    // STIHL proxy for stihl-demo
+    if (pathname === '/proxy/stihl') {
+      return handleStihlProxy(request, env, ctx);
+    }
+
+    // STIHL demo page → serve from Pages
+    if (pathname === '/stihl-demo') {
+      const pagesUrl = new URL(request.url);
+      pagesUrl.hostname = 'manipulation-demo.pages.dev';
+      pagesUrl.pathname = '/stihl-demo.html';
+      return fetch(pagesUrl.toString());
+    }
 
     // BESV font proxy (CORS fix for cross-origin @font-face)
     if (pathname.startsWith('/proxy/besv-font/')) {
