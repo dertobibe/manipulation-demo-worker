@@ -241,13 +241,11 @@ function getPersonalizedContent(classification) {
 const PRODUCT_VARIANTS = {
   mtb: {
     title: 'Giro Coalition Spherical – Der ultimative Trail-Helm für kompromisslose Rider',
-    fluxPrompt: 'Professional product photo of a matte black mountain bike helmet, aggressive trail design, dramatic mountain scenery background with dirt trails, MTB action sports photography, dynamic angle, 8k quality',
-    cacheKey: 'product-variant-mtb',
+    imageKey: 'product-variant-mtb',
   },
   safety: {
     title: 'Giro Coalition Spherical – Maximaler Schutz mit MIPS II für Ihr Kind',
-    fluxPrompt: 'Professional product photo of a white protective bicycle helmet, clean bright studio background, safety certification badges, soft protective padding visible, family-friendly safe design, 8k quality',
-    cacheKey: 'product-variant-safety',
+    imageKey: 'product-variant-safety',
   },
 };
 
@@ -269,12 +267,12 @@ class ProductTitleHandler {
 }
 
 class ProductImageHandler {
-  constructor(dataUri) { this.dataUri = dataUri; this.replaced = false; }
+  constructor(imageUrl) { this.imageUrl = imageUrl; this.replaced = false; }
   element(element) {
     if (this.replaced) return;
     const src = element.getAttribute('src') || '';
     if (src.includes('hero') || src.includes('product') || src.includes('200285')) {
-      element.setAttribute('src', this.dataUri);
+      element.setAttribute('src', this.imageUrl);
       element.setAttribute('srcset', '');
       this.replaced = true;
     }
@@ -288,21 +286,14 @@ async function handleShopProxy(request, env, ctx) {
   const variant = url.searchParams.get('variant') || 'original';
   const variantConfig = PRODUCT_VARIANTS[variant];
 
-  // Parallel: fetch shop page + generate image (if variant needs it)
-  const shopFetchPromise = fetch(SHOP_URL, {
+  // Fetch shop page
+  const shopResponse = await fetch(SHOP_URL, {
     headers: {
       'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
     },
   });
-
-  let imagePromise = Promise.resolve(null);
-  if (variantConfig) {
-    imagePromise = getOrGenerateProductImage(variantConfig, env, ctx);
-  }
-
-  const [shopResponse, imageResult] = await Promise.all([shopFetchPromise, imagePromise]);
 
   // Clean response headers to allow iframe embedding
   const newHeaders = new Headers(shopResponse.headers);
@@ -317,9 +308,9 @@ async function handleShopProxy(request, env, ctx) {
   // Apply content manipulation only for non-original variants
   if (variantConfig) {
     rewriter = rewriter.on('h1', new ProductTitleHandler(variantConfig.title));
-    if (imageResult && imageResult.src) {
-      rewriter = rewriter.on('.product-detail-image img, .product-stage img, .image-container img, img[class*="product"], img[class*="hero"], img[data-src*="200285"], img[src*="200285"]', new ProductImageHandler(imageResult.src));
-    }
+    // Image served via worker route /proxy/product-image
+    const imageUrl = `/proxy/product-image?variant=${variant}`;
+    rewriter = rewriter.on('.product-detail-image img, .product-stage img, .image-container img, img[class*="product"], img[class*="hero"], img[data-src*="200285"], img[src*="200285"]', new ProductImageHandler(imageUrl));
   }
 
   const modifiedResponse = new Response(shopResponse.body, {
@@ -330,78 +321,26 @@ async function handleShopProxy(request, env, ctx) {
   return rewriter.transform(modifiedResponse);
 }
 
-// --- Get or generate product variant image ---
+// --- Serve product variant image from R2 ---
 
-async function getOrGenerateProductImage(variantConfig, env, ctx) {
-  const { cacheKey, fluxPrompt } = variantConfig;
+async function handleProductImage(request, env) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant');
+  const variantConfig = PRODUCT_VARIANTS[variant];
 
-  // 1. Try R2 cache
-  try {
-    const cached = await env.IMAGE_CACHE.get(cacheKey);
-    if (cached) {
-      const buffer = await cached.arrayBuffer();
-      const base64 = arrayBufferToBase64(buffer);
-      return { src: `data:image/png;base64,${base64}`, source: 'r2-cache' };
-    }
-  } catch (e) {
-    // Cache miss, continue
+  if (!variantConfig) {
+    return new Response('Unknown variant', { status: 404 });
   }
 
-  // 2. Generate via Workers AI (FLUX)
-  try {
-    const aiResponse = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', {
-      prompt: fluxPrompt,
-      num_steps: 4,
-    });
-
-    let imageBuffer;
-    if (aiResponse instanceof ReadableStream) {
-      const reader = aiResponse.getReader();
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-      imageBuffer = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        imageBuffer.set(chunk, offset);
-        offset += chunk.length;
-      }
-      imageBuffer = imageBuffer.buffer;
-    } else if (aiResponse instanceof ArrayBuffer) {
-      imageBuffer = aiResponse;
-    } else if (aiResponse.image) {
-      const base64 = aiResponse.image;
-      const binaryStr = atob(base64);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-      ctx.waitUntil(
-        env.IMAGE_CACHE.put(cacheKey, bytes.buffer, {
-          httpMetadata: { contentType: 'image/png' },
-          customMetadata: { prompt: fluxPrompt, generated: new Date().toISOString() },
-        })
-      );
-      return { src: `data:image/png;base64,${base64}`, source: 'ai-generated' };
-    } else {
-      throw new Error('Unexpected AI response format');
-    }
-
-    const base64 = arrayBufferToBase64(imageBuffer);
-
-    ctx.waitUntil(
-      env.IMAGE_CACHE.put(cacheKey, imageBuffer, {
-        httpMetadata: { contentType: 'image/png' },
-        customMetadata: { prompt: fluxPrompt, generated: new Date().toISOString() },
-      })
-    );
-
-    return { src: `data:image/png;base64,${base64}`, source: 'ai-generated' };
-  } catch (e) {
-    return { src: '', source: `error: ${e.message}` };
+  const object = await env.IMAGE_CACHE.get(variantConfig.imageKey);
+  if (!object) {
+    return new Response('Image not found', { status: 404 });
   }
+
+  const headers = new Headers();
+  headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
+  headers.set('Cache-Control', 'public, max-age=86400');
+  return new Response(object.body, { headers });
 }
 
 // --- HTMLRewriter Handlers (IP Detection Demo) ---
@@ -532,6 +471,11 @@ export default {
     const pathname = requestUrl.pathname;
 
     // --- Routing ---
+
+    // Product variant image from R2
+    if (pathname === '/proxy/product-image') {
+      return handleProductImage(request, env);
+    }
 
     // Shop proxy for product demo
     if (pathname === '/proxy/shop') {
