@@ -533,71 +533,23 @@ class STIHLTitleHandler {
   }
 }
 
-// Inject script before </body> to handle React hydration overrides
-class STIHLPostHydrationScript {
+// Intercept __PRELOADED_STATE__ before React component JS loads
+// Injects a script before the productdetailheaderbanner component JS that
+// decodes the base64 state, modifies product data, and re-encodes it.
+class STIHLStateInterceptor {
   constructor(title, imageUrl) {
     this.title = title;
     this.imageUrl = imageUrl;
+    this.done = false;
   }
   element(element) {
-    const script = `
-<script>
-(function() {
-  var VARIANT_TITLE = ${JSON.stringify(this.title)};
-  var VARIANT_IMAGE = ${JSON.stringify(this.imageUrl)};
-
-  function applyTitle() {
-    var h1 = document.querySelector('.m_product-detail-headline__title');
-    if (h1 && h1.textContent !== VARIANT_TITLE) {
-      h1.textContent = VARIANT_TITLE;
+    if (this.done) return;
+    const src = element.getAttribute('src') || '';
+    if (src.includes('productdetailheaderbanner')) {
+      const script = `<script>(function(){try{var r=window.__PRELOADED_STATE__;if(!r)return;var d=JSON.parse(decodeURIComponent(escape(atob(r))));d.currentProduct.model.familyName=${JSON.stringify(this.title)};var u=${JSON.stringify(this.imageUrl)};if(d.currentProduct.model.assets&&d.currentProduct.model.assets.length>0){d.currentProduct.model.assets[0].url=u;d.currentProduct.model.assets[0].thumb=u;}if(d.currentProduct.model.stageImage){d.currentProduct.model.stageImage.url=u;d.currentProduct.model.stageImage.thumb=u;}window.__PRELOADED_STATE__=btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch(e){console.warn('State intercept:',e);}})();</script>`;
+      element.before(script, { html: true });
+      this.done = true;
     }
-  }
-
-  function applyImage() {
-    if (!VARIANT_IMAGE) return;
-    // Replace first gallery slide image (main product image)
-    var firstSlide = document.querySelector('.image-gallery-slide.center');
-    if (firstSlide) {
-      var sources = firstSlide.querySelectorAll('source');
-      sources.forEach(function(s) { s.setAttribute('srcSet', VARIANT_IMAGE); });
-      var img = firstSlide.querySelector('img');
-      if (img) { img.src = VARIANT_IMAGE; img.removeAttribute('loading'); }
-    }
-    // Also replace first thumbnail
-    var firstThumb = document.querySelector('.image-gallery-thumbnail.active picture');
-    if (firstThumb) {
-      var tsources = firstThumb.querySelectorAll('source');
-      tsources.forEach(function(s) { s.setAttribute('srcSet', VARIANT_IMAGE); });
-      var timg = firstThumb.querySelector('img');
-      if (timg) { timg.src = VARIANT_IMAGE; }
-    }
-  }
-
-  function applyAll() { applyTitle(); applyImage(); }
-
-  // Apply immediately
-  applyAll();
-
-  // Re-apply after DOM content loaded (React hydration)
-  document.addEventListener('DOMContentLoaded', function() {
-    applyAll();
-    // Re-apply periodically for a few seconds to catch late hydration
-    var attempts = 0;
-    var interval = setInterval(function() {
-      applyAll();
-      if (++attempts >= 10) clearInterval(interval);
-    }, 500);
-  });
-
-  // MutationObserver as final safety net
-  var observer = new MutationObserver(function() { applyAll(); });
-  var target = document.querySelector('.m_product-detail-headline__title');
-  if (target) observer.observe(target, { childList: true, characterData: true, subtree: true });
-  var gallery = document.querySelector('.image-gallery-slides');
-  if (gallery) observer.observe(gallery, { childList: true, subtree: true, attributes: true });
-})();
-</script>`;
-    element.append(script, { html: true });
   }
 }
 
@@ -628,7 +580,7 @@ async function handleStihlProxy(request, env, ctx) {
     const imageUrl = `${url.origin}/proxy/stihl-image?variant=${variant}`;
     rewriter = rewriter
       .on('.m_product-detail-headline__title', new STIHLTitleHandler(variantConfig.title))
-      .on('body', new STIHLPostHydrationScript(variantConfig.title, imageUrl));
+      .on('script[src]', new STIHLStateInterceptor(variantConfig.title, imageUrl));
   }
 
   const modifiedResponse = new Response(stihlResponse.body, {
