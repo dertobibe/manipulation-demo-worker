@@ -350,7 +350,7 @@ async function handleProductImage(request, env) {
 
 // --- BESV Demo: Variant Content ---
 
-const BESV_URL = 'https://besv.eu/e-bikes/trs-b-170-1-2/';
+const BESV_URL = 'https://besv.eu/de/e-bike/trs-b-170-1-2/';
 
 const BESV_VARIANTS = {
   trail: {
