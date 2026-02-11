@@ -411,6 +411,31 @@ class BESVBannerImageHandler {
   }
 }
 
+// --- BESV: Rewrite font stylesheet link to proxy through our worker (CORS fix) ---
+
+class BESVFontLinkRewriter {
+  element(element) {
+    const href = element.getAttribute('href') || '';
+    if (href.includes('besv-by-dayz/font/stylesheet.css')) {
+      element.setAttribute('href', '/proxy/besv-font/stylesheet.css');
+    }
+  }
+}
+
+// --- BESV: Serve font files from besv.eu through our origin ---
+
+async function handleBESVFont(request) {
+  const url = new URL(request.url);
+  const fontPath = url.pathname.replace('/proxy/besv-font/', '');
+  const fontUrl = `https://besv.eu/wp-content/themes/besv-by-dayz/font/${fontPath}`;
+
+  const fontResponse = await fetch(fontUrl);
+  const headers = new Headers(fontResponse.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Cache-Control', 'public, max-age=604800');
+  return new Response(fontResponse.body, { status: fontResponse.status, headers });
+}
+
 // --- BESV Proxy Handler ---
 
 async function handleBESVProxy(request, env, ctx) {
@@ -432,7 +457,8 @@ async function handleBESVProxy(request, env, ctx) {
   newHeaders.delete('content-security-policy-report-only');
 
   let rewriter = new HTMLRewriter()
-    .on('head', new BESVBaseTagHandler());
+    .on('head', new BESVBaseTagHandler())
+    .on('link[href*="besv-by-dayz/font"]', new BESVFontLinkRewriter());
 
   if (variantConfig) {
     rewriter = rewriter
@@ -603,6 +629,11 @@ export default {
     const pathname = requestUrl.pathname;
 
     // --- Routing ---
+
+    // BESV font proxy (CORS fix for cross-origin @font-face)
+    if (pathname.startsWith('/proxy/besv-font/')) {
+      return handleBESVFont(request);
+    }
 
     // BESV variant image from R2
     if (pathname === '/proxy/besv-image') {
