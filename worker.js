@@ -236,7 +236,175 @@ function getPersonalizedContent(classification) {
   return COMPANY_CONTENT['_default_private'];
 }
 
-// --- HTMLRewriter Handlers ---
+// --- Product Variant Content ---
+
+const PRODUCT_VARIANTS = {
+  mtb: {
+    title: 'Giro Coalition Spherical – Der ultimative Trail-Helm für kompromisslose Rider',
+    fluxPrompt: 'Professional product photo of a matte black mountain bike helmet, aggressive trail design, dramatic mountain scenery background with dirt trails, MTB action sports photography, dynamic angle, 8k quality',
+    cacheKey: 'product-variant-mtb',
+  },
+  safety: {
+    title: 'Giro Coalition Spherical – Maximaler Schutz mit MIPS II für Ihr Kind',
+    fluxPrompt: 'Professional product photo of a white protective bicycle helmet, clean bright studio background, safety certification badges, soft protective padding visible, family-friendly safe design, 8k quality',
+    cacheKey: 'product-variant-safety',
+  },
+};
+
+const SHOP_URL = 'https://shop.grofa.com/de/p/giro-coalition-spherical-fahrradhelm-200285/?itemId=200285011';
+
+// --- Shop Proxy: HTMLRewriter Handlers ---
+
+class BaseTagHandler {
+  element(element) {
+    element.prepend('<base href="https://shop.grofa.com/">', { html: true });
+  }
+}
+
+class ProductTitleHandler {
+  constructor(newTitle) { this.newTitle = newTitle; }
+  element(element) {
+    element.setInnerContent(this.newTitle, { html: false });
+  }
+}
+
+class ProductImageHandler {
+  constructor(dataUri) { this.dataUri = dataUri; this.replaced = false; }
+  element(element) {
+    if (this.replaced) return;
+    const src = element.getAttribute('src') || '';
+    if (src.includes('hero') || src.includes('product') || src.includes('200285')) {
+      element.setAttribute('src', this.dataUri);
+      element.setAttribute('srcset', '');
+      this.replaced = true;
+    }
+  }
+}
+
+// --- Shop Proxy Handler ---
+
+async function handleShopProxy(request, env, ctx) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant') || 'original';
+  const variantConfig = PRODUCT_VARIANTS[variant];
+
+  // Parallel: fetch shop page + generate image (if variant needs it)
+  const shopFetchPromise = fetch(SHOP_URL, {
+    headers: {
+      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+    },
+  });
+
+  let imagePromise = Promise.resolve(null);
+  if (variantConfig) {
+    imagePromise = getOrGenerateProductImage(variantConfig, env, ctx);
+  }
+
+  const [shopResponse, imageResult] = await Promise.all([shopFetchPromise, imagePromise]);
+
+  // Clean response headers to allow iframe embedding
+  const newHeaders = new Headers(shopResponse.headers);
+  newHeaders.delete('x-frame-options');
+  newHeaders.delete('content-security-policy');
+  newHeaders.delete('content-security-policy-report-only');
+
+  // Build HTMLRewriter — always inject base tag for relative URLs
+  let rewriter = new HTMLRewriter()
+    .on('head', new BaseTagHandler());
+
+  // Apply content manipulation only for non-original variants
+  if (variantConfig) {
+    rewriter = rewriter.on('h1', new ProductTitleHandler(variantConfig.title));
+    if (imageResult && imageResult.src) {
+      rewriter = rewriter.on('.product-detail-image img, .product-stage img, .image-container img, img[class*="product"], img[class*="hero"], img[data-src*="200285"], img[src*="200285"]', new ProductImageHandler(imageResult.src));
+    }
+  }
+
+  const modifiedResponse = new Response(shopResponse.body, {
+    status: shopResponse.status,
+    headers: newHeaders,
+  });
+
+  return rewriter.transform(modifiedResponse);
+}
+
+// --- Get or generate product variant image ---
+
+async function getOrGenerateProductImage(variantConfig, env, ctx) {
+  const { cacheKey, fluxPrompt } = variantConfig;
+
+  // 1. Try R2 cache
+  try {
+    const cached = await env.IMAGE_CACHE.get(cacheKey);
+    if (cached) {
+      const buffer = await cached.arrayBuffer();
+      const base64 = arrayBufferToBase64(buffer);
+      return { src: `data:image/png;base64,${base64}`, source: 'r2-cache' };
+    }
+  } catch (e) {
+    // Cache miss, continue
+  }
+
+  // 2. Generate via Workers AI (FLUX)
+  try {
+    const aiResponse = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', {
+      prompt: fluxPrompt,
+      num_steps: 4,
+    });
+
+    let imageBuffer;
+    if (aiResponse instanceof ReadableStream) {
+      const reader = aiResponse.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+      imageBuffer = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        imageBuffer.set(chunk, offset);
+        offset += chunk.length;
+      }
+      imageBuffer = imageBuffer.buffer;
+    } else if (aiResponse instanceof ArrayBuffer) {
+      imageBuffer = aiResponse;
+    } else if (aiResponse.image) {
+      const base64 = aiResponse.image;
+      const binaryStr = atob(base64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      ctx.waitUntil(
+        env.IMAGE_CACHE.put(cacheKey, bytes.buffer, {
+          httpMetadata: { contentType: 'image/png' },
+          customMetadata: { prompt: fluxPrompt, generated: new Date().toISOString() },
+        })
+      );
+      return { src: `data:image/png;base64,${base64}`, source: 'ai-generated' };
+    } else {
+      throw new Error('Unexpected AI response format');
+    }
+
+    const base64 = arrayBufferToBase64(imageBuffer);
+
+    ctx.waitUntil(
+      env.IMAGE_CACHE.put(cacheKey, imageBuffer, {
+        httpMetadata: { contentType: 'image/png' },
+        customMetadata: { prompt: fluxPrompt, generated: new Date().toISOString() },
+      })
+    );
+
+    return { src: `data:image/png;base64,${base64}`, source: 'ai-generated' };
+  } catch (e) {
+    return { src: '', source: `error: ${e.message}` };
+  }
+}
+
+// --- HTMLRewriter Handlers (IP Detection Demo) ---
 
 class InjectByID {
   constructor(contentMap) { this.contentMap = contentMap; }
@@ -360,10 +528,29 @@ async function getOrGenerateImage(imageInfo, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const startTime = Date.now();
+    const requestUrl = new URL(request.url);
+    const pathname = requestUrl.pathname;
+
+    // --- Routing ---
+
+    // Shop proxy for product demo
+    if (pathname === '/proxy/shop') {
+      return handleShopProxy(request, env, ctx);
+    }
+
+    // Product demo page → serve from Pages
+    if (pathname === '/product-demo') {
+      const pagesUrl = new URL(request.url);
+      pagesUrl.hostname = 'manipulation-demo.pages.dev';
+      pagesUrl.pathname = '/product-demo.html';
+      return fetch(pagesUrl.toString());
+    }
+
+    // --- Existing IP Detection Demo ---
+
     const visitorIP = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
     // Bypass
-    const requestUrl = new URL(request.url);
     if (requestUrl.searchParams.get('utm_bypass') === 'true') {
       const pagesUrl = new URL(request.url);
       pagesUrl.hostname = 'manipulation-demo.pages.dev';
