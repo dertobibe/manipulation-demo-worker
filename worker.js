@@ -348,6 +348,174 @@ async function handleProductImage(request, env) {
   return new Response(object.body, { headers });
 }
 
+// --- BESV Demo: Variant Content ---
+
+const BESV_URL = 'https://besv.eu/e-bikes/trs-b-170-1-2/';
+
+const BESV_VARIANTS = {
+  trail: {
+    title: 'Mehr Höhenmeter, mehr Lines, mehr Kontrolle – das TRS‑B 170 1.2 ist dein E‑MTB für lange Nächte auf dem Trail.',
+    description: `<p><strong>Trail-Enthusiast E‑MTB</strong><br />
+Mit 170 mm vorne und 160 mm hinten, Bosch Performance CX Gen.5 mit 100 Nm und 800 Wh PowerTube-Akku holst du aus jedem Anstieg und jeder Abfahrt das Maximum heraus. Die Mullet-Laufradkombination gibt dir präzise Frontkontrolle und ein verspieltes Heck, während die RockShox-Fahrwerkskombi jeden Drop glattbügelt. Shimano Deore XT 12‑fach, 220/203 mm Vierkolbenbremsen und ein robuster Alloy‑Rahmen machen das TRS‑B 170 1.2 bereit für steile Lines, Bikepark‑Tage und lange Enduro‑Touren.</p>`,
+    imageKey: 'besv-variant-trail',
+  },
+  speed: {
+    title: 'Dein Trail‑Bike für den Feierabend – und dein Trainingspartner für jede Steigung.',
+    description: `<p><strong>Speed-Pendler Performance</strong><br />
+Wenn dein Arbeitsweg über Höhenmeter, Waldwege und grobe Passagen führt, bringt dich das TRS‑B 170 1.2 mit Bosch Performance CX Motor (100 Nm) und 800 Wh Akku mit Tempo und Reserven ans Ziel. Die 170/160 mm RockShox-Federung sorgt dafür, dass selbst ruppige Abschnitte ruhig bleiben, während Shimano Deore XT 12‑fach dir immer den richtigen Gang liefert. Die starken Vierkolbenbremsen mit 220/203 mm Scheiben geben dir Sicherheit, wenn es bergab schneller wird – egal ob auf dem Heimweg oder bei der Wochenendrunde.</p>`,
+    imageKey: 'besv-variant-speed',
+  },
+  touring: {
+    title: 'Für alle, deren Alltag über Forstwege, Trails und Höhenmeter führt – ein E‑MTB mit Touren‑Reserven.',
+    description: `<p><strong>Tourenorientierter Pendler</strong><br />
+Du kombinierst lange Arbeitswege mit anspruchsvollem Gelände? Das TRS‑B 170 1.2 liefert mit Bosch Performance CX Motor, 800 Wh Akku und Shimano XT 12‑fach die Ausdauer und Schaltpräzision, die du für lange Tage im Sattel brauchst. Die 170/160 mm RockShox-Federung entschärft Wurzelteppiche und grobe Passagen, während die Maxxis Minion Bereifung dir Grip bei Nässe und auf Schotter gibt. Mit 160 kg zulässigem Gesamtgewicht bleibt auch mit Rucksack und Ausrüstung genug Reserve.</p>`,
+    imageKey: 'besv-variant-touring',
+  },
+  urban: {
+    title: 'Tagsüber Alltag, abends Trail – ein E‑MTB für alle, die mehr wollen als nur von A nach B.',
+    description: `<p><strong>Urban Allrounder</strong><br />
+Du willst nach der Arbeit nicht auf Asphalt hängenbleiben? Das TRS‑B 170 1.2 verbindet einen modernen, markanten Look mit einem Paket für echte Offroad‑Performance. Der Bosch Performance CX Motor unterstützt dich kraftvoll auch auf steilen Rampen, während der 800 Wh Akku genug Kapazität für Arbeitsweg plus Abendrunde liefert. RockShox-Fahrwerk, Mullet-Laufräder und Shimano XT 12‑fach geben dir Sicherheit und Kontrolle, wenn aus der Feierabendstrecke spontan ein Trail‑Abenteuer wird.</p>`,
+    imageKey: 'besv-variant-urban',
+  },
+  comfort: {
+    title: 'Sicher unterwegs – auch wenn der Weg mal ruppiger wird.',
+    description: `<p><strong>Komfort & Sicherheit</strong><br />
+Wenn du wieder mehr in die Natur willst und dabei Reserven für unebene Wege suchst, bietet dir das TRS‑B 170 1.2 viel Sicherheit. Der Bosch Performance CX Motor unterstützt dich kraftvoll am Berg, während 170 mm Federweg vorne und 160 mm hinten Stöße abfedern und das Rad ruhig halten. Die starken Scheibenbremsen mit vier Kolben sorgen für kontrolliertes Abbremsen, selbst wenn es steil bergab geht – so kannst du dich auf die Aussicht konzentrieren.</p>`,
+    imageKey: 'besv-variant-comfort',
+  },
+};
+
+// --- BESV: HTMLRewriter Handlers ---
+
+class BESVBaseTagHandler {
+  element(element) {
+    element.prepend('<base href="https://besv.eu/">', { html: true });
+  }
+}
+
+class BESVTitleHandler {
+  constructor(newTitle) { this.newTitle = newTitle; }
+  element(element) {
+    element.setInnerContent(this.newTitle, { html: false });
+  }
+}
+
+class BESVDescriptionHandler {
+  constructor(newDescription) { this.newDescription = newDescription; }
+  element(element) {
+    element.setInnerContent(this.newDescription, { html: true });
+  }
+}
+
+class BESVImageHandler {
+  constructor(imageUrl) { this.imageUrl = imageUrl; this.replaced = false; }
+  element(element) {
+    if (this.replaced) return;
+    const src = element.getAttribute('src') || '';
+    const cls = element.getAttribute('class') || '';
+    if (cls.includes('imh-6310-main-image') || src.includes('BESV-TRS')) {
+      element.setAttribute('src', this.imageUrl);
+      if (element.getAttribute('data-imh-value')) {
+        element.setAttribute('data-imh-value', this.imageUrl);
+      }
+      if (element.getAttribute('srcset')) {
+        element.setAttribute('srcset', '');
+      }
+      this.replaced = true;
+    }
+  }
+}
+
+class BESVGalleryImageHandler {
+  constructor(imageUrl) { this.imageUrl = imageUrl; this.replaced = false; }
+  element(element) {
+    if (this.replaced) return;
+    const src = element.getAttribute('src') || '';
+    if (src.includes('BESV-TRS')) {
+      element.setAttribute('src', this.imageUrl);
+      this.replaced = true;
+    }
+  }
+}
+
+class BESVGalleryLinkHandler {
+  constructor(imageUrl) { this.imageUrl = imageUrl; this.replaced = false; }
+  element(element) {
+    if (this.replaced) return;
+    const href = element.getAttribute('href') || '';
+    if (href.includes('BESV-TRS')) {
+      element.setAttribute('href', this.imageUrl);
+      this.replaced = true;
+    }
+  }
+}
+
+// --- BESV Proxy Handler ---
+
+async function handleBESVProxy(request, env, ctx) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant') || 'original';
+  const variantConfig = BESV_VARIANTS[variant];
+
+  const besvResponse = await fetch(BESV_URL, {
+    headers: {
+      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+    },
+  });
+
+  const newHeaders = new Headers(besvResponse.headers);
+  newHeaders.delete('x-frame-options');
+  newHeaders.delete('content-security-policy');
+  newHeaders.delete('content-security-policy-report-only');
+
+  let rewriter = new HTMLRewriter()
+    .on('head', new BESVBaseTagHandler());
+
+  if (variantConfig) {
+    rewriter = rewriter
+      .on('h1.product_title', new BESVTitleHandler(variantConfig.title))
+      .on('.woocommerce-product-details__short-description', new BESVDescriptionHandler(variantConfig.description));
+
+    if (variantConfig.imageKey) {
+      const imageUrl = `${url.origin}/proxy/besv-image?variant=${variant}`;
+      rewriter = rewriter
+        .on('img.imh-6310-main-image, .slides img', new BESVImageHandler(imageUrl))
+        .on('.slides a[data-fancybox="gallery"]', new BESVGalleryLinkHandler(imageUrl));
+    }
+  }
+
+  const modifiedResponse = new Response(besvResponse.body, {
+    status: besvResponse.status,
+    headers: newHeaders,
+  });
+
+  return rewriter.transform(modifiedResponse);
+}
+
+// --- Serve BESV variant image from R2 ---
+
+async function handleBESVImage(request, env) {
+  const url = new URL(request.url);
+  const variant = url.searchParams.get('variant');
+  const variantConfig = BESV_VARIANTS[variant];
+
+  if (!variantConfig || !variantConfig.imageKey) {
+    return new Response('Unknown variant', { status: 404 });
+  }
+
+  const object = await env.IMAGE_CACHE.get(variantConfig.imageKey);
+  if (!object) {
+    return new Response('Image not found in R2', { status: 404 });
+  }
+
+  const headers = new Headers();
+  headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
+  headers.set('Cache-Control', 'public, max-age=86400');
+  return new Response(object.body, { headers });
+}
+
 // --- HTMLRewriter Handlers (IP Detection Demo) ---
 
 class InjectByID {
@@ -476,6 +644,24 @@ export default {
     const pathname = requestUrl.pathname;
 
     // --- Routing ---
+
+    // BESV variant image from R2
+    if (pathname === '/proxy/besv-image') {
+      return handleBESVImage(request, env);
+    }
+
+    // BESV proxy for besv-demo
+    if (pathname === '/proxy/besv') {
+      return handleBESVProxy(request, env, ctx);
+    }
+
+    // BESV demo page → serve from Pages
+    if (pathname === '/besv-demo') {
+      const pagesUrl = new URL(request.url);
+      pagesUrl.hostname = 'manipulation-demo.pages.dev';
+      pagesUrl.pathname = '/besv-demo.html';
+      return fetch(pagesUrl.toString());
+    }
 
     // Product variant image from R2
     if (pathname === '/proxy/product-image') {
