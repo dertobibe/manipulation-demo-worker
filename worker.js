@@ -271,9 +271,14 @@ class ProductImageHandler {
   element(element) {
     if (this.replaced) return;
     const src = element.getAttribute('src') || '';
-    if (src.includes('hero') || src.includes('product') || src.includes('200285')) {
+    if (src.includes('hero')) {
       element.setAttribute('src', this.imageUrl);
-      element.setAttribute('srcset', '');
+      if (element.getAttribute('data-bigimage')) {
+        element.setAttribute('data-bigimage', this.imageUrl);
+      }
+      if (element.getAttribute('srcset')) {
+        element.setAttribute('srcset', '');
+      }
       this.replaced = true;
     }
   }
@@ -308,9 +313,9 @@ async function handleShopProxy(request, env, ctx) {
   // Apply content manipulation only for non-original variants
   if (variantConfig) {
     rewriter = rewriter.on('h1', new ProductTitleHandler(variantConfig.title));
-    // Image served via worker route /proxy/product-image
-    const imageUrl = `/proxy/product-image?variant=${variant}`;
-    rewriter = rewriter.on('.product-detail-image img, .product-stage img, .image-container img, img[class*="product"], img[class*="hero"], img[data-src*="200285"], img[src*="200285"]', new ProductImageHandler(imageUrl));
+    // Absolute URL so <base> tag doesn't redirect to shop.grofa.com
+    const imageUrl = `${url.origin}/proxy/product-image?variant=${variant}`;
+    rewriter = rewriter.on('img[itemprop="image"]', new ProductImageHandler(imageUrl));
   }
 
   const modifiedResponse = new Response(shopResponse.body, {
