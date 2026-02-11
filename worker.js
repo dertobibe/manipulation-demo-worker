@@ -533,6 +533,31 @@ class STIHLTitleHandler {
   }
 }
 
+// --- STIHL: Rewrite CSS + font preload links to proxy (CORS fix) ---
+
+class STIHLFontLinkRewriter {
+  element(element) {
+    const href = element.getAttribute('href') || '';
+    if (href.includes('stihl-styles')) {
+      element.setAttribute('href', '/proxy/stihl-assets' + href);
+    }
+  }
+}
+
+// --- STIHL: Serve CSS and font files from stihl.de through our origin ---
+
+async function handleStihlAssets(request) {
+  const url = new URL(request.url);
+  const assetPath = url.pathname.replace('/proxy/stihl-assets/', '');
+  const assetUrl = `https://www.stihl.de/${assetPath}`;
+
+  const response = await fetch(assetUrl);
+  const headers = new Headers(response.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Cache-Control', 'public, max-age=604800');
+  return new Response(response.body, { status: response.status, headers });
+}
+
 // Intercept __PRELOADED_STATE__ before React component JS loads
 // Injects a script before the productdetailheaderbanner component JS that
 // decodes the base64 state, modifies product data, and re-encodes it.
@@ -574,7 +599,8 @@ async function handleStihlProxy(request, env, ctx) {
   newHeaders.delete('content-security-policy-report-only');
 
   let rewriter = new HTMLRewriter()
-    .on('head', new STIHLBaseTagHandler());
+    .on('head', new STIHLBaseTagHandler())
+    .on('link[href*="stihl-styles"]', new STIHLFontLinkRewriter());
 
   if (variantConfig) {
     const imageUrl = `${url.origin}/proxy/stihl-image?variant=${variant}`;
@@ -791,6 +817,11 @@ export default {
     const pathname = requestUrl.pathname;
 
     // --- Routing ---
+
+    // STIHL CSS + font proxy (CORS fix for cross-origin @font-face)
+    if (pathname.startsWith('/proxy/stihl-assets/')) {
+      return handleStihlAssets(request);
+    }
 
     // STIHL variant image from R2 (with FLUX fallback)
     if (pathname === '/proxy/stihl-image') {
