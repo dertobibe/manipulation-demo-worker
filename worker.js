@@ -524,9 +524,11 @@ const STIHL_VARIANTS = {
 // This avoids confusing URL resolution between base tag and JS-constructed URLs.
 
 class STIHLTitleHandler {
-  constructor(newTitle) { this.newTitle = newTitle; }
+  constructor(newTitle) { this.newTitle = newTitle; this.done = false; }
   element(element) {
+    if (this.done) return;
     element.setInnerContent(this.newTitle, { html: false });
+    this.done = true;
   }
 }
 
@@ -541,21 +543,41 @@ class STIHLFontInjector {
   }
 }
 
-// Intercept __PRELOADED_STATE__ before React component JS loads.
-// Only modifies familyName (title) — image replacement is done via
-// cookie-based asset proxy to avoid breaking React hydration.
+// Intercept __PRELOADED_STATE__ after the inline script that sets it.
+// Uses text handler to detect the right script, then onEndTag to inject
+// a modification script immediately after. Only modifies familyName (title)
+// — image replacement is done via cookie-based asset proxy.
 class STIHLStateInterceptor {
   constructor(title) {
     this.title = title;
-    this.done = false;
+    this.found = false;
+    this.isCandidate = false;
+    this.hasState = false;
   }
   element(element) {
-    if (this.done) return;
-    const src = element.getAttribute('src') || '';
-    if (src.includes('productdetailheaderbanner')) {
-      const script = `<script>(function(){try{var r=window.__PRELOADED_STATE__;if(!r)return;var d=JSON.parse(decodeURIComponent(escape(atob(r))));d.currentProduct.model.familyName=${JSON.stringify(this.title)};window.__PRELOADED_STATE__=btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch(e){console.warn('State intercept:',e);}})();</script>`;
-      element.before(script, { html: true });
-      this.done = true;
+    if (this.found) return;
+    // Only target inline scripts (no src attribute, no special type like application/ld+json)
+    const src = element.getAttribute('src');
+    const type = element.getAttribute('type');
+    if (src || (type && type !== 'text/javascript')) {
+      this.isCandidate = false;
+      return;
+    }
+    this.isCandidate = true;
+    this.hasState = false;
+    const self = this;
+    element.onEndTag((endTag) => {
+      if (self.hasState) {
+        self.found = true;
+        const script = `<script>(function(){try{var r=window.__PRELOADED_STATE__;if(!r)return;var d=JSON.parse(decodeURIComponent(escape(atob(r))));d.currentProduct.model.familyName=${JSON.stringify(self.title)};window.__PRELOADED_STATE__=btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch(e){console.warn('State intercept:',e);}})();</script>`;
+        endTag.after(script, { html: true });
+      }
+    });
+  }
+  text(text) {
+    if (!this.isCandidate || this.found) return;
+    if (text.text.includes('__PRELOADED_STATE__')) {
+      this.hasState = true;
     }
   }
 }
@@ -581,14 +603,17 @@ async function handleStihlProxy(request, env, ctx) {
   newHeaders.delete('content-security-policy-report-only');
   // Cookie tells the asset proxy which variant images to serve
   newHeaders.set('Set-Cookie', `stihl-variant=${variant}; Path=/; SameSite=Lax`);
+  // Prevent browser caching of variant pages (each variant has different content)
+  newHeaders.set('Cache-Control', 'no-store');
 
   let rewriter = new HTMLRewriter()
     .on('head', new STIHLFontInjector());
 
   if (variantConfig) {
+    const stateInterceptor = new STIHLStateInterceptor(variantConfig.title);
     rewriter = rewriter
-      .on('.m_product-detail-headline__title', new STIHLTitleHandler(variantConfig.title))
-      .on('script[src]', new STIHLStateInterceptor(variantConfig.title));
+      .on('h1', new STIHLTitleHandler(variantConfig.title))
+      .on('script', stateInterceptor);
   }
 
   const modifiedResponse = new Response(stihlResponse.body, {
