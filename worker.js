@@ -547,17 +547,20 @@ class STIHLFontInjector {
 // Intercept __PRELOADED_STATE__ before React component JS loads
 // Injects a script before the productdetailheaderbanner component JS that
 // decodes the base64 state, modifies product data, and re-encodes it.
+// Image URLs use /proxy/stihl-variant-asset/{variant}.jpg so that React's
+// .transform/... suffix appending still produces a routable path.
 class STIHLStateInterceptor {
-  constructor(title, imageUrl) {
+  constructor(title, variant) {
     this.title = title;
-    this.imageUrl = imageUrl;
+    this.variant = variant;
     this.done = false;
   }
   element(element) {
     if (this.done) return;
     const src = element.getAttribute('src') || '';
     if (src.includes('productdetailheaderbanner')) {
-      const script = `<script>(function(){try{var r=window.__PRELOADED_STATE__;if(!r)return;var d=JSON.parse(decodeURIComponent(escape(atob(r))));d.currentProduct.model.familyName=${JSON.stringify(this.title)};var u=${JSON.stringify(this.imageUrl)};if(d.currentProduct.model.assets&&d.currentProduct.model.assets.length>0){d.currentProduct.model.assets[0].url=u;d.currentProduct.model.assets[0].thumb=u;}if(d.currentProduct.model.stageImage){d.currentProduct.model.stageImage.url=u;d.currentProduct.model.stageImage.thumb=u;}window.__PRELOADED_STATE__=btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch(e){console.warn('State intercept:',e);}})();</script>`;
+      const assetUrl = `/proxy/stihl-variant-asset/${this.variant}.jpg`;
+      const script = `<script>(function(){try{var r=window.__PRELOADED_STATE__;if(!r)return;var d=JSON.parse(decodeURIComponent(escape(atob(r))));d.currentProduct.model.familyName=${JSON.stringify(this.title)};var u=${JSON.stringify(assetUrl)};if(d.currentProduct.model.assets&&d.currentProduct.model.assets.length>0){for(var i=0;i<d.currentProduct.model.assets.length;i++){d.currentProduct.model.assets[i].url=u;d.currentProduct.model.assets[i].thumb=u;}}if(d.currentProduct.model.stageImage){d.currentProduct.model.stageImage.url=u;d.currentProduct.model.stageImage.thumb=u;}window.__PRELOADED_STATE__=btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch(e){console.warn('State intercept:',e);}})();</script>`;
       element.before(script, { html: true });
       this.done = true;
     }
@@ -589,10 +592,9 @@ async function handleStihlProxy(request, env, ctx) {
     .on('head', new STIHLFontInjector());
 
   if (variantConfig) {
-    const imageUrl = `${url.origin}/proxy/stihl-image?variant=${variant}`;
     rewriter = rewriter
       .on('.m_product-detail-headline__title', new STIHLTitleHandler(variantConfig.title))
-      .on('script[src]', new STIHLStateInterceptor(variantConfig.title, imageUrl));
+      .on('script[src]', new STIHLStateInterceptor(variantConfig.title, variant));
   }
 
   const modifiedResponse = new Response(stihlResponse.body, {
@@ -605,9 +607,8 @@ async function handleStihlProxy(request, env, ctx) {
 
 // --- Serve STIHL variant image from R2 (with FLUX generation fallback) ---
 
-async function handleStihlImage(request, env, ctx) {
-  const url = new URL(request.url);
-  const variant = url.searchParams.get('variant');
+async function handleStihlImage(request, env, ctx, variantOverride) {
+  const variant = variantOverride || new URL(request.url).searchParams.get('variant');
   const variantConfig = STIHL_VARIANTS[variant];
 
   if (!variantConfig) {
@@ -804,9 +805,44 @@ export default {
 
     // --- Routing ---
 
+    // STIHL variant image asset — React appends .transform/... to the URL,
+    // so we match the prefix and serve the variant image regardless of suffix
+    if (pathname.startsWith('/proxy/stihl-variant-asset/')) {
+      const match = pathname.match(/\/proxy\/stihl-variant-asset\/(\w+)/);
+      if (match) {
+        const variant = match[1];
+        const variantConfig = STIHL_VARIANTS[variant];
+        if (variantConfig) {
+          const cached = await env.IMAGE_CACHE.get(variantConfig.imageKey);
+          if (cached) {
+            const headers = new Headers();
+            headers.set('Content-Type', cached.httpMetadata?.contentType || 'image/jpeg');
+            headers.set('Cache-Control', 'public, max-age=86400');
+            return new Response(cached.body, { headers });
+          }
+          // Fall through to FLUX generation
+          return handleStihlImage(request, env, ctx, variant);
+        }
+      }
+      return new Response('Unknown variant', { status: 404 });
+    }
+
     // STIHL variant image from R2 (with FLUX fallback)
     if (pathname === '/proxy/stihl-image') {
       return handleStihlImage(request, env, ctx);
+    }
+
+    // Proxy STIHL assets (images, etc.) — React loads these relative to page origin
+    if (pathname.startsWith('/content/dam/stihl/') || pathname.startsWith('/content/experience-fragments/stihl/')) {
+      const stihlAssetUrl = `https://www.stihl.de${pathname}`;
+      const assetResponse = await fetch(stihlAssetUrl, {
+        headers: { 'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0' },
+      });
+      const assetHeaders = new Headers(assetResponse.headers);
+      assetHeaders.set('Cache-Control', 'public, max-age=86400');
+      assetHeaders.delete('content-security-policy');
+      assetHeaders.delete('x-frame-options');
+      return new Response(assetResponse.body, { status: assetResponse.status, headers: assetHeaders });
     }
 
     // STIHL proxy for stihl-demo
