@@ -580,17 +580,22 @@ class STIHLStateInterceptor {
   }
 }
 
-// Post-hydration script: replaces product images in the DOM after React renders.
-// More reliable than cookies because it doesn't depend on browser cookie behavior.
-class STIHLImageReplacer {
-  constructor(imageUrl) {
+// Post-hydration script: enforces variant title and replaces product images.
+// Uses MutationObserver to persist changes even after React re-renders
+// (e.g. when React fetches fresh data from the API due to fullyLoaded:false).
+class STIHLVariantEnforcer {
+  constructor(title, imageUrl) {
+    this.title = title;
     this.imageUrl = imageUrl;
   }
   element(element) {
     const script = `<script>(function(){
+var t=${JSON.stringify(this.title)};
 var imgUrl=${JSON.stringify(this.imageUrl)};
 var ids=['20344','20343','89136','94782','17456'];
 function r(){
+var h=document.querySelector('h1');
+if(h&&h.textContent!==t)h.textContent=t;
 document.querySelectorAll('picture').forEach(function(p){
 var i=p.querySelector('img');if(!i)return;
 var s=i.getAttribute('src')||'';
@@ -603,7 +608,7 @@ i.setAttribute('src',imgUrl);i.removeAttribute('loading');
 var o=new MutationObserver(function(){r();});
 function start(){if(!document.body)return setTimeout(start,50);
 o.observe(document.body,{childList:true,subtree:true});r();}
-start();setTimeout(function(){o.disconnect();},15000);
+start();setTimeout(function(){o.disconnect();},30000);
 })();</script>`;
     element.append(script, { html: true });
   }
@@ -640,7 +645,7 @@ async function handleStihlProxy(request, env, ctx) {
     rewriter = rewriter
       .on('h1', new STIHLTitleHandler(variantConfig.title))
       .on('script', stateInterceptor)
-      .on('body', new STIHLImageReplacer(imageUrl));
+      .on('body', new STIHLVariantEnforcer(variantConfig.title, imageUrl));
   }
 
   const modifiedResponse = new Response(stihlResponse.body, {
