@@ -520,11 +520,8 @@ const STIHL_VARIANTS = {
 
 // --- STIHL: HTMLRewriter Handlers ---
 
-class STIHLBaseTagHandler {
-  element(element) {
-    element.prepend('<base href="https://www.stihl.de/">', { html: true });
-  }
-}
+// No <base> tag — all STIHL assets are proxied through the worker instead.
+// This avoids confusing URL resolution between base tag and JS-constructed URLs.
 
 class STIHLTitleHandler {
   constructor(newTitle) { this.newTitle = newTitle; }
@@ -586,7 +583,6 @@ async function handleStihlProxy(request, env, ctx) {
   newHeaders.set('Set-Cookie', `stihl-variant=${variant}; Path=/; SameSite=Lax`);
 
   let rewriter = new HTMLRewriter()
-    .on('head', new STIHLBaseTagHandler())
     .on('head', new STIHLFontInjector());
 
   if (variantConfig) {
@@ -830,7 +826,19 @@ export default {
       return handleStihlImage(request, env, ctx);
     }
 
-    // Proxy STIHL assets (images, etc.) — React loads these relative to page origin.
+    // Proxy STIHL JS/CSS clientlibs (no <base> tag, so all relative URLs hit our worker)
+    if (pathname.startsWith('/etc.clientlibs/')) {
+      const stihlAssetUrl = `https://www.stihl.de${pathname}`;
+      const assetResponse = await fetch(stihlAssetUrl, {
+        headers: { 'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0' },
+      });
+      const assetHeaders = new Headers(assetResponse.headers);
+      assetHeaders.set('Cache-Control', 'public, max-age=86400');
+      assetHeaders.delete('content-security-policy');
+      return new Response(assetResponse.body, { status: assetResponse.status, headers: assetHeaders });
+    }
+
+    // Proxy STIHL assets (images, etc.) — all relative URLs hit our worker.
     // For variant pages, product images are replaced with variant images via cookie.
     if (pathname.startsWith('/content/dam/stihl/') || pathname.startsWith('/content/experience-fragments/stihl/')) {
       // Check cookie for variant image replacement
